@@ -56,6 +56,39 @@ Phase 3: 长期
 | **Latent space** | 32×32×4 = 1024 tokens，跟你现在 token 数一样 |
 | **开源** | 官方代码直接可跑，数据 pipeline 现成 |
 
+### 为什么是 SiT 而不是其他？
+
+**核心原则：最合适的研究平台 ≠ 最强的模型。** 你要的是干净地验证「把 NA 插进 FM DiT 里，attention 行为怎么变」，不是刷榜。
+
+**SiT 的独特优势**：
+
+1. **架构跟现有代码完全对齐**：标准 DiT（adaLN-Zero + Self-Attention + MLP），不是 MMDiT 双流。你的 `make_attention()` 几乎是 drop-in replacement。
+2. **最简单的 FM 实现**：线性 interpolant，跟你 `flow_matching.py` 一模一样。
+3. **规模合适**：675M，单卡 3090 可推理可 fine-tune。
+4. **代码最干净**：标准 PyTorch，无奇怪依赖。
+
+**SiT 的劣势**（诚实列）：
+
+| 劣势 | 为何不影响 |
+|------|-----------|
+| 2024 年模型，不是 SOTA | 你要的是 attention 行为，不是刷榜 |
+| FID ~2.x，不如 FreqFlow 1.38 | Baseline 质量够用，不影响 attention 结论 |
+| 官方 repo 可能不活跃了 | 验证兼容性后即可，改动量小 |
+| Latent space 不是 pixel space | 研究问题不要求 pixel；Phase 2 才扩展 |
+
+**为什么不选其他**：
+
+| 候选 | 不选的理由 |
+|------|-----------|
+| **Flux** | 9B 太大，单卡跑不动 fine-tune；MMDiT 双流，attention 替换不是只改一侧 |
+| **SD3** | 同上，MMDiT text+image 双流；变体多，选哪个都纠结 |
+| **PixArt-α** | DiT 架构但用 DDPM 不是 Flow Matching |
+| **AsymFlow** | Pixel SOTA 但 9B + 依赖 Flux 生态 + 代码新可能不稳定 |
+| **FreqFlow** | CVPR 2026 太新代码可能不稳；频域双分支不是标准 DiT，变量太多 |
+| **MPDiT** | CVPR 2026 太新；multi-patch 机制引入了额外变量（token 粒度变化），消融不好做 |
+
+**底线**：SiT 是标准 DiT + FM，跟你的研究问题（一个变量 = attention 类型）匹配度最高，是阻力最小的路径。Phase 1 出数据后，换 SD3/Flux 做 cross-model hook 验证是零训练成本的。
+
 ### Step 1: Full attention 测量（零训练成本）
 
 ```bash
