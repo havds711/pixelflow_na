@@ -36,6 +36,16 @@ HDiT/ΔConvFusion/PiT        同样方法            发现相同/不同
 
 最简单的 flow DiT：标准 DiT backbone + flow matching loss，固定分辨率（如 64×64），不做 cascade。唯一变量 = attention 类型。
 
+> **为什么不在 PixelFlow 上实验？** PixelFlow 是 cascade 架构（多阶段、逐级上采样），NA 只能在最后 1-2 个高分辨率 stage 起作用——收益被稀释。且 cascade + NA 两个效率策略叠一起，消融不好做。用单阶段固定分辨率 DiT，一变量 = 一结论。
+
+### Phase 2 升级方向（Phase 1 数据决定走哪个）
+
+| 方向 | 来源 | 做什么 | 场景 |
+|------|------|--------|------|
+| **Dilation** | DiNAT | 空洞采样，感受野指数增长，计算量不变 | Phase 1 发现 flow 需要更大感受野 |
+| **Hydra-NA** | StyleNAT | 同层不同 head 不同 kernel size，多尺度融合 | Phase 1 发现单一 kernel size 不够 |
+| **频域分解** | DeCo/FREPix | 低频大感受野+高频局部，原则性分离 | Phase 1 死活调不好 kernel size |
+
 ### 论文标题思路
 
 - **推荐**：*Revisiting Neighborhood Attention under Flow Matching: Is Local Enough for Straight Paths?*
