@@ -39,6 +39,7 @@ class DiTConfig:
     # Attention
     attn_type: Literal["full", "na"] = "full"
     na_kernel_size: int = 7
+    na_dilation: int = 1      # dilation factor (>1 = sparse sampling, for Phase 2)
     attn_dropout: float = 0.0
 
     # Conditioning
@@ -175,6 +176,7 @@ class DiTBlock(nn.Module):
             dim=config.dim,
             num_heads=config.heads,
             kernel_size=config.na_kernel_size,
+            dilation=config.na_dilation,
             dropout=config.attn_dropout,
         )
 

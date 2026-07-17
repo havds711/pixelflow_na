@@ -17,13 +17,16 @@
 
 | 选择 | 理由 |
 |------|------|
-| **64×64 分辨率** | 32×32 grid（1024 tokens），单卡 3090 可训练，全 attention 不爆炸 |
-| **DiT-S backbone** | dim=384, depth=12, heads=6 (~127M)，参考 DiT 论文 |
+| **64×64 分辨率** | 32×32 grid（1024 tokens），单卡 3090 可训练 |
+| **DiT-T backbone** | dim=192, depth=6, heads=3 (~4.5M)，快速实验验证 |
+| **DiT-S backbone** | dim=384, depth=12, heads=6 (~33.5M)，正式实验 |
 | **Patch size 2** | 得到 32×32 token grid，每个 token 覆盖 2×2 像素 |
-| **CIFAR-10 数据集** | 本地已有，10 类，class-to-image (c2i) 场景，32→64 resize |
+| **ImageNet-64 (parquet)** | 本地 `/PixelDiT-vae/c2i/imagenet_parquet/`，160K 张，124 类，256→64 降采样 |
+| **CIFAR-10** | 保留用于冒烟测试，32→64 resize（不推荐用于正式实验） |
 | **线性 interpolant** | Flow Matching 最简单路径：x_t = (1-t)x_0 + t·x_1，v = x_1 - x_0 |
 | **Euler ODE 采样** | 从 t=1 积分到 t=0，可调步数 |
-| **Mask-based NA** | 计算完整 QK^T 后加 mask（对 1024 token 足够高效），Chebyshev 距离定义窗口 |
+| **NATTEN CUDA + PyTorch fallback** | 训练用 NATTEN（O(N·k²)），测量用 mask（需完整 attention matrix） |
+| **Per-t 分析** | ERF 和 distance 按 t 分组输出，支持 t-adaptive kernel 假设验证 |
 
 ---
 

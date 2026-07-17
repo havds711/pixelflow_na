@@ -4,15 +4,16 @@ Kernel size sweep: train & evaluate NA models with different kernel sizes.
 
 Runs the full experiment matrix:
   attention types: full | NA(k=3,5,7,11,15)
-  metrics: FID, GFLOPs, ERF, distance distribution
+  metrics: FID, GFLOPs, ERF (per-t), distance distribution (per-t)
 
 Usage:
   # Full sweep (train all variants)
-  python sweep.py --dataset cifar10 --model DiT_T --epochs 100
+  python sweep.py --dataset imagenet_parquet \\
+    --data_dir ~/PixelDiT-vae/c2i/imagenet_parquet --model DiT_T --epochs 100
 
   # Quick sweep: only measure (use existing checkpoints)
-  python sweep.py --dataset cifar10 --model DiT_T --measure_only \\
-                   --ckpt_dir checkpoints/sweep/
+  python sweep.py --dataset imagenet_parquet --model DiT_T --measure_only \\
+    --ckpt_dir checkpoints/sweep/
 """
 
 import argparse
@@ -20,12 +21,13 @@ import torch
 import os
 import sys
 import json
-import time
+import numpy as np
 from tqdm import tqdm
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from models.dit import DiT, DiTConfig, DiT_T, DiT_S
+from models.dit import DiT, DiTConfig, DiT_T, DiT_S, LabelEmbedder
+from models.attention import make_attention
 from models.flow_matching import FlowMatchingTrainer, sample_ode
 from data.dataset import get_dataloader
 from measure import measure_erf, measure_distance_distribution, load_model
@@ -44,15 +46,17 @@ SWEEP_KERNELS = {
 def parse_args():
     parser = argparse.ArgumentParser(description="Kernel size sweep experiment")
 
-    parser.add_argument('--dataset', type=str, default='cifar10')
-    parser.add_argument('--data_dir', type=str, default='./data')
+    parser.add_argument('--dataset', type=str, default='imagenet_parquet')
+    parser.add_argument('--data_dir', type=str,
+                        default=os.path.expanduser('~/PixelDiT-vae/c2i/imagenet_parquet'))
     parser.add_argument('--model', type=str, default='DiT_T', choices=['DiT_T', 'DiT_S'])
     parser.add_argument('--img_size', type=int, default=64)
     parser.add_argument('--patch_size', type=int, default=2)
-    parser.add_argument('--num_classes', type=int, default=10)
+    parser.add_argument('--num_classes', type=int, default=None,
+                        help='Num classes (auto-detected if not set)')
 
     parser.add_argument('--epochs', type=int, default=100, help='Training epochs per variant')
-    parser.add_argument('--batch_size', type=int, default=64)
+    parser.add_argument('--batch_size', type=int, default=16)
     parser.add_argument('--lr', type=float, default=1e-4)
 
     parser.add_argument('--kernels', type=str, nargs='+',
@@ -75,59 +79,32 @@ def parse_args():
     return parser.parse_args()
 
 
-def count_gflops(model: DiT, img_size: int, attn_type: str, kernel_size: int) -> float:
-    """
-    Estimate GFLOPs for a forward pass.
-
-    Full attention: O(N²·d) per layer
-    NA: O(N·k²·d) per layer
-
-    This is a rough estimate based on architecture parameters.
-    """
+def count_gflops(model: DiT, attn_type: str, kernel_size: int) -> float:
     N = model.config.num_patches
     d = model.config.dim
     depth = model.config.depth
     heads = model.config.heads
     head_dim = d // heads
 
-    # QKV projection: 3 × N × d² (input dim = d, output = 3d)
     gflops_qkv = 3 * N * d * (3 * d) / 1e9
 
     if attn_type == 'full':
-        # Attention: 2 × heads × N² × head_dim (QK^T + AV)
         gflops_attn = 2 * heads * N * N * head_dim / 1e9
     else:
-        # NA: 2 × heads × N × k² × head_dim
         k = kernel_size
         gflops_attn = 2 * heads * N * (k * k) * head_dim / 1e9
 
-    # Output projection: N × d²
     gflops_proj = N * d * d / 1e9
-
-    # MLP: 2 × N × d × (mlp_ratio * d)
     mlp_ratio = 4.0
     gflops_mlp = 2 * N * d * (mlp_ratio * d) / 1e9
 
-    gflops_per_block = gflops_attn + gflops_proj + gflops_mlp
-    total = gflops_qkv + depth * gflops_per_block
-
-    return total
+    return gflops_qkv + depth * (gflops_attn + gflops_proj + gflops_mlp)
 
 
 def compute_fid_fast(
-    model: DiT,
-    real_loader,
-    n_fake: int = 5000,
-    img_size: int = 64,
-    steps: int = 20,
-    batch_size: int = 64,
-    cfg_scale: float = 1.0,
-    device: str = "cuda",
+    model, real_loader, n_fake=5000, img_size=64, steps=20, batch_size=64,
+    cfg_scale=1.0, device="cuda",
 ) -> float:
-    """
-    Compute FID using torchvision InceptionV3.
-    Simplified version — for accurate FID use pytorch-fid or clean-fid.
-    """
     from torchvision.models import inception_v3
     from scipy import linalg
 
@@ -137,13 +114,10 @@ def compute_fid_fast(
 
     def get_features(images):
         images = torch.nn.functional.interpolate(images, size=(299, 299), mode='bilinear', align_corners=False)
-        # [-1, 1] range for Inception
         images = images * 2 - 1
         with torch.no_grad():
-            feats = inception(images)
-        return feats.cpu().numpy()
+            return inception(images).cpu().numpy()
 
-    # Real features
     real_features = []
     n_collected = 0
     for batch in tqdm(real_loader, desc="Real features"):
@@ -155,7 +129,6 @@ def compute_fid_fast(
             break
     real_features = np.concatenate(real_features, axis=0)[:n_fake]
 
-    # Fake features
     fake_features = []
     n_batches = (n_fake + batch_size - 1) // batch_size
     for i in tqdm(range(n_batches), desc="Fake features"):
@@ -164,17 +137,13 @@ def compute_fid_fast(
         fake_features.append(get_features(fake))
     fake_features = np.concatenate(fake_features, axis=0)
 
-    # FID
-    mu_real, sigma_real = real_features.mean(axis=0), np.cov(real_features, rowvar=False)
-    mu_fake, sigma_fake = fake_features.mean(axis=0), np.cov(fake_features, rowvar=False)
+    mu_r, sig_r = real_features.mean(axis=0), np.cov(real_features, rowvar=False)
+    mu_f, sig_f = fake_features.mean(axis=0), np.cov(fake_features, rowvar=False)
 
-    diff = mu_real - mu_fake
-    tr_covmean = np.trace(sigma_real @ sigma_fake)
-    # Numerical stability
-    tr_covmean = np.real(linalg.sqrtm(sigma_real @ sigma_fake)).trace()
-
-    fid = diff @ diff + np.trace(sigma_real) + np.trace(sigma_fake) - 2 * tr_covmean
-    return float(fid)
+    diff = mu_r - mu_f
+    covmean = np.real(linalg.sqrtm(sig_r @ sig_f)).trace()
+    fid = diff @ diff + np.trace(sig_r) + np.trace(sig_f) - 2 * covmean
+    return float(max(fid, 0.0))
 
 
 def main():
@@ -183,14 +152,20 @@ def main():
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
 
     device = args.device
-    if device == 'cuda' and not torch.cuda.is_available():
+    if 'cuda' in device and not torch.cuda.is_available():
         device = 'cpu'
 
-    # Data loader for FID reference
-    real_loader = get_dataloader(
-        args.dataset, args.data_dir, args.img_size, args.batch_size,
-        num_workers=2, train=False,
+    # Data loaders
+    real_loader, num_classes = get_dataloader(
+        args.dataset, os.path.expanduser(args.data_dir),
+        args.img_size, args.batch_size, num_workers=2, train=False,
     )
+    if args.num_classes is not None:
+        num_classes = args.num_classes
+
+    print(f"Dataset: {args.dataset}, {num_classes} classes")
+    print(f"Kernels: {args.kernels}")
+    print(f"Device: {device}")
 
     results = {}
 
@@ -205,55 +180,51 @@ def main():
         ckpt_path = os.path.join(args.ckpt_dir, f"dit_{name}.pt")
 
         if not args.measure_only:
-            # Build model
             if args.model == 'DiT_T':
                 model = DiT_T(img_size=args.img_size, patch_size=args.patch_size,
-                              attn_type=attn_type, na_kernel_size=kernel_size or 7,
-                              num_classes=args.num_classes)
+                              num_classes=num_classes)
             else:
                 model = DiT_S(img_size=args.img_size, patch_size=args.patch_size,
-                              attn_type=attn_type, na_kernel_size=kernel_size or 7,
-                              num_classes=args.num_classes)
+                              num_classes=num_classes)
 
-            # Override attention
-            from models.attention import make_attention
-            from models.dit import LabelEmbedder
+            config = model.config
+            config.attn_type = attn_type
+            config.na_kernel_size = kernel_size or 7
+
             for block in model.blocks:
                 block.attn = make_attention(attn_type, block.dim, block.attn.num_heads,
                                             kernel_size or 7)
-            model.label_embedder = LabelEmbedder(args.num_classes, model.config.dim)
+            model.label_embedder = LabelEmbedder(num_classes, config.dim)
 
-            train_loader = get_dataloader(
-                args.dataset, args.data_dir, args.img_size, args.batch_size,
-                num_workers=4,
+            train_loader, _ = get_dataloader(
+                args.dataset, os.path.expanduser(args.data_dir),
+                args.img_size, args.batch_size, num_workers=4, train=True,
             )
 
             trainer = FlowMatchingTrainer(model, lr=args.lr, device=device)
             trainer.train(train_loader, epochs=args.epochs, log_every=20,
                           save_every=args.epochs, save_path=ckpt_path)
-
-            # Use EMA for evaluation
             eval_model = trainer.ema_model if trainer.ema_model else model
         else:
             eval_model = load_model(ckpt_path, args.model, attn_type,
-                                    kernel_size or 7, args.num_classes,
+                                    kernel_size or 7, num_classes,
                                     args.img_size, device)
 
         # --- Measurements ---
-        print(f"\n  Measuring ERF...")
+        print("  Measuring ERF...")
         erf = measure_erf(eval_model, n_samples=args.n_measure_samples,
                           img_size=args.img_size, device=device)
 
-        print(f"  Measuring Distance Distribution...")
+        print("  Measuring Distance Distribution...")
         dist = measure_distance_distribution(eval_model, n_samples=args.n_measure_samples,
                                              img_size=args.img_size, device=device)
 
-        print(f"  Computing GFLOPs...")
-        gflops = count_gflops(eval_model, args.img_size, attn_type, kernel_size or 7)
+        gflops = count_gflops(eval_model, attn_type, kernel_size or 7)
 
-        print(f"  Computing FID (this takes a while)...")
+        print("  Computing FID...")
         fid = compute_fid_fast(eval_model, real_loader, n_fake=args.n_fid_samples,
-                                img_size=args.img_size, steps=20, device=device)
+                                img_size=args.img_size, steps=20, batch_size=args.batch_size,
+                                device=device)
 
         results[name] = {
             'attn_type': attn_type,
@@ -261,22 +232,22 @@ def main():
             'gflops': gflops,
             'fid': fid,
             'erf_mean': erf['mean_erf'],
+            'per_t_erf': erf.get('per_t_erf', {}),
             'erf_per_layer': {str(k): v['mean'] for k, v in erf['layer_erf'].items()},
             'distance_mean': dist['mean_distance'],
             'distance_p99': dist['p99_distance'],
             'distance_p95': dist['p95_distance'],
+            'per_t_distance': dist.get('per_t_distance', {}),
         }
 
-        print(f"\n  Results for {name}:")
-        print(f"    FID: {fid:.2f} | GFLOPs: {gflops:.2f} | ERF: {erf['mean_erf']:.2f} | "
-              f"Dist mean: {dist['mean_distance']:.2f} | P99: {dist['p99_distance']:.2f}")
+        print(f"\n  {name}: FID={fid:.2f} GFLOPs={gflops:.2f} ERF={erf['mean_erf']:.2f} "
+              f"Dist: mean={dist['mean_distance']:.2f} P99={dist['p99_distance']:.2f}")
 
-    # Save all results
     with open(args.output, 'w') as f:
-        json.dump(results, f, indent=2)
-    print(f"\nFull sweep results saved to {args.output}")
+        json.dump(results, f, indent=2, default=str)
+    print(f"\nSaved to {args.output}")
 
-    # Print summary table
+    # Summary
     print(f"\n{'='*80}")
     print(f"{'Variant':<10} {'FID':>8} {'GFLOPs':>8} {'ERF':>8} {'Dist Mean':>10} {'Dist P99':>10}")
     print(f"{'-'*60}")

@@ -96,66 +96,85 @@ def measure_erf(
     model.eval()
     grid_size = model.config.grid_size
 
-    # Accumulate attention maps per layer
-    all_attn_maps = {}  # {layer_idx: [sample_attn_maps]}
+    # Accumulate attention maps: per-layer and per-t
+    all_attn_maps = {}       # {layer_idx: [sample_attn_maps]}
+    per_t_attn_maps = {}     # {t_val: {layer_idx: [sample_attn_maps]}}
 
     for t_val in t_values:
-        # Generate random noisy images at timestep t
         x_0 = torch.rand(n_samples, 3, img_size, img_size, device=device)
         x_1 = torch.randn(n_samples, 3, img_size, img_size, device=device)
         x_t = (1 - t_val) * x_0 + t_val * x_1
         t_tensor = torch.full((n_samples,), t_val, device=device)
 
-        # Extract attention weights
         attn_list = model.get_attention_weights(x_t, t_tensor)
+
+        if t_val not in per_t_attn_maps:
+            per_t_attn_maps[t_val] = {}
 
         for layer_idx, attn in enumerate(attn_list):
             if attn is None:
                 continue
-            # attn: [B, heads, N, N]
-            # Average over batch and heads
             avg_attn = attn.mean(dim=(0, 1))  # [N, N]
 
+            # Per-layer (all t merged)
             if layer_idx not in all_attn_maps:
                 all_attn_maps[layer_idx] = []
             all_attn_maps[layer_idx].append(avg_attn.detach().cpu())
 
-    # Compute ERF per layer
+            # Per-t per-layer
+            if layer_idx not in per_t_attn_maps[t_val]:
+                per_t_attn_maps[t_val][layer_idx] = []
+            per_t_attn_maps[t_val][layer_idx].append(avg_attn.detach().cpu())
+
+    coords = _build_coord_grid(grid_size)
+
+    def _compute_erf_for_maps(attn_maps_dict):
+        """Compute mean ERF across all layers for a given set of attention maps."""
+        layer_vals = []
+        for layer_idx, attn_maps in attn_maps_dict.items():
+            avg_attn = torch.stack(attn_maps).mean(dim=0)
+            erf_vals = []
+            for q in range(avg_attn.shape[0]):
+                weights = avg_attn[q]
+                sq_dist = ((coords - coords[q]) ** 2).sum(dim=-1)
+                msd = (weights * sq_dist).sum()
+                if msd > 0:
+                    erf_vals.append(torch.sqrt(msd).item())
+            if erf_vals:
+                layer_vals.append(np.mean(erf_vals))
+        return np.mean(layer_vals) if layer_vals else 0.0
+
+    # Per-layer ERF (all t merged)
     layer_erf = {}
-    coords = _build_coord_grid(grid_size)  # [N, 2]
-
     for layer_idx, attn_maps in all_attn_maps.items():
-        # Average attention over all samples and timesteps
-        avg_attn = torch.stack(attn_maps).mean(dim=0)  # [N, N]
-        N = avg_attn.shape[0]
-
-        # For each query (row), compute weighted mean squared distance
+        avg_attn = torch.stack(attn_maps).mean(dim=0)
         erf_values = []
-        for q in range(N):
-            # Attention from query q to all keys
-            weights = avg_attn[q]  # [N] — sum to 1 (softmax)
-            # Squared distance from q to all keys (in 2D grid)
-            sq_dist = ((coords - coords[q]) ** 2).sum(dim=-1)  # [N]
-            # Weighted variance (ERF²)
-            mean_sq_dist = (weights * sq_dist).sum()
-            if mean_sq_dist > 0:
-                erf_values.append(torch.sqrt(mean_sq_dist).item())
-
+        for q in range(avg_attn.shape[0]):
+            weights = avg_attn[q]
+            sq_dist = ((coords - coords[q]) ** 2).sum(dim=-1)
+            msd = (weights * sq_dist).sum()
+            if msd > 0:
+                erf_values.append(torch.sqrt(msd).item())
         if erf_values:
             layer_erf[layer_idx] = {
                 'mean': np.mean(erf_values),
                 'std': np.std(erf_values),
                 'median': np.median(erf_values),
-                'values': erf_values,
             }
 
-    # Summary
+    # Per-t ERF
+    per_t_erf = {}
+    for t_val in t_values:
+        per_t_erf[float(t_val)] = float(_compute_erf_for_maps(per_t_attn_maps[t_val]))
+
+    # Overall mean
     all_means = [v['mean'] for v in layer_erf.values()]
     mean_erf = np.mean(all_means) if all_means else 0.0
 
     return {
         'layer_erf': layer_erf,
         'mean_erf': mean_erf,
+        'per_t_erf': per_t_erf,
         'grid_size': grid_size,
     }
 
@@ -213,6 +232,36 @@ def measure_distance_distribution(
     dist_hist = torch.zeros(max_distance + 1, dtype=torch.float64)
     total_weight = 0.0
     per_layer_stats = {}
+    per_t_stats = {}  # {t_val: {'mean': ..., 'p99': ...}}
+
+    def _compute_dist_stats(attn, distances, max_dist):
+        """Compute mean and p99 for one attention matrix."""
+        N = attn.shape[0]
+        dists_all = []
+        weights_all = []
+        for q in range(N):
+            w = attn[q].detach().cpu()
+            d = distances[q]
+            dists_all.append(d)
+            weights_all.append(w)
+        dists_all = torch.stack(dists_all)
+        weights_all = torch.stack(weights_all)
+
+        # Mean
+        total_w = weights_all.sum() + 1e-8
+        mean_d = (weights_all * dists_all).sum().item() / total_w.item()
+
+        # P99: sort by distance, compute cumulative weight
+        flat_w = weights_all.flatten()
+        flat_d = dists_all.flatten()
+        order = flat_d.argsort()
+        sorted_w = flat_w[order] / total_w
+        sorted_d = flat_d[order]
+        cum = torch.cumsum(sorted_w, dim=0)
+        p99_idx = (cum >= 0.99).nonzero(as_tuple=True)
+        p99 = float(sorted_d[p99_idx[0][0]]) if len(p99_idx[0]) > 0 else float(max_dist)
+
+        return mean_d, p99
 
     for t_val in t_values:
         x_0 = torch.rand(n_samples, 3, img_size, img_size, device=device)
@@ -222,21 +271,21 @@ def measure_distance_distribution(
 
         attn_list = model.get_attention_weights(x_t, t_tensor)
 
+        # Per-t: average attention across all layers and heads
+        t_attn_maps = []
         for layer_idx, attn in enumerate(attn_list):
             if attn is None:
                 continue
-            # attn: [B, heads, N, N]
             avg_attn = attn.mean(dim=(0, 1))  # [N, N]
+            t_attn_maps.append(avg_attn)
 
-            # Accumulate distance-weighted histogram
+            # Accumulate global histogram
             for q in range(N):
                 weights = avg_attn[q].detach().cpu()
                 ds = distances[q]
-                # Bin by floor(distance)
                 for d_idx in range(max_distance + 1):
                     mask = (ds >= d_idx) & (ds < d_idx + 1)
-                    dist_hist[d_idx] += (weights[mask]).sum().item()
-                # Also count the far tail
+                    dist_hist[d_idx] += weights[mask].sum().item()
                 mask_far = ds >= max_distance
                 dist_hist[max_distance] += weights[mask_far].sum().item()
                 total_weight += weights.sum().item()
@@ -244,15 +293,19 @@ def measure_distance_distribution(
             # Per-layer stats
             if layer_idx not in per_layer_stats:
                 per_layer_stats[layer_idx] = {'mean_dist': [], 'p99': []}
-
             layer_dists = []
             for q in range(N):
                 weights = avg_attn[q].detach().cpu()
                 ds = distances[q]
                 mean_d = (weights * ds).sum().item() / (weights.sum().item() + 1e-8)
                 layer_dists.append(mean_d)
-
             per_layer_stats[layer_idx]['mean_dist'].append(np.mean(layer_dists))
+
+        # Per-t stats: average over all layers
+        if t_attn_maps:
+            t_mean_attn = torch.stack(t_attn_maps).mean(dim=0)
+            t_mean_d, t_p99 = _compute_dist_stats(t_mean_attn, distances, max_distance)
+            per_t_stats[float(t_val)] = {'mean': float(t_mean_d), 'p99': float(t_p99)}
 
     # Normalize histogram
     if total_weight > 0:
@@ -284,6 +337,7 @@ def measure_distance_distribution(
         'mean_distance': mean_dist,
         'max_distance': max_distance,
         'per_layer': per_layer_stats,
+        'per_t_distance': per_t_stats,
     }
 
 
