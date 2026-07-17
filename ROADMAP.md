@@ -1,142 +1,179 @@
-# pixelflow_na — 后续研究思路
+# pixelflow_na — 研究路线图
 
-> 2026-07-17 · 跑完 Phase 1 后可以继续做的方向
-
----
-
-## 当前
-
-DiT + ImageNet-64 + 6 种 kernel size sweep，per-t ERF 和 distance distribution 分析。
+> 2026-07-18 更新 · Pivot: pixel space 从零训 → latent space 基于 pretrained 验证
 
 ---
 
-## 一条主线：Receptive Field Dynamics in Flow Matching
+## 🎯 核心判断
 
-同一个 research direction 可以滚雪球出多篇论文，每篇在前一篇基础上新增一个核心贡献：
+**研究问题不需要 pixel space。** 「NA 在 FM 下的行为 + per-t ERF 动态变化」是 attention 层面的问题，跟 token 代表像素还是 latent feature 无关。在 latent space 用 SiT pretrained model 做，成本更低、结论更强、代码 80% 复用。
+
+Pixel space 是 **Phase 2 扩展**，不是 Phase 1 前提。
+
+---
+
+## 📐 新路线总览
 
 ```
-论文 1: 发现 ────→ 论文 2: 发现+方法 ────→ 论文 3: 理论+系统 ────→ 论文 4: 期刊长文
+Phase 1: Latent Space 验证（1-2 周）
+  SiT-XL/2 pretrained → 替换 attention → fine-tune → 测量
+  ├─ full attention ERF/distance 测量（零训练成本，立刻出图）
+  ├─ NA fine-tune（k=3,5,7,11,15）
+  └─ 完整 FID + GFLOPs + per-t ERF + distance 数据
+
+         ↓  决策点：per-t ERF 差异 ≥ 2×？
+
+  YES ──→ Phase 1.5: t-adaptive kernel 方法
+  NO  ──→ Phase 1.5: NA 在 FM 下的系统对比（短文/workshop）
+
+         ↓
+
+Phase 2: Pixel Space 扩展（Phase 1 有结论后）
+  ├─ 用 Phase 1 的结论指导 pixel space 实验设计
+  ├─ 复现/对比 HDiT 的 pixel-space 结论
+  └─ 或：直接拿 pretrained pixel flow model（AsymFlow）做 post-hoc
+
+         ↓
+
+Phase 3: 长期
+  ├─ 跨架构验证（SD/Flux/PixArt — 零训练 cost hook attention）
+  ├─ 256×256+ 分辨率扩展
+  ├─ 理论分析（flow ODE → receptive field 需求）
+  └─ 动态架构 / 可解释性工具 / 视频生成
 ```
 
 ---
 
-## 一、近期的直接扩展
+## Phase 1 详细：Latent Space SiT
 
-不需要新 idea，从当前代码框架直接延伸：
+### 为什么选 SiT
 
-### 1. Latent Space 验证
+| 理由 | 说明 |
+|------|------|
+| **DiT backbone** | 跟你现有 `models/dit.py` 架构一致，attention 替换 zero-cost |
+| **Flow Matching** | 线性 interpolant，跟你的 `flow_matching.py` 一致 |
+| **Pretrained 权重** | SiT-XL/2, 675M, FID ~2.x — proven model |
+| **Latent space** | 32×32×4 = 1024 tokens，跟你现在 token 数一样 |
+| **开源** | 官方代码直接可跑，数据 pipeline 现成 |
 
-拿 pretrained model 做 inference 时 hook attention，零训练成本：
+### Step 1: Full attention 测量（零训练成本）
 
-| 模型 | 架构 | 来源 |
+```bash
+# 1. Clone SiT + 加载 pretrained weights
+# 2. 把你的 measure.py 移植过去
+# 3. 直接 run
+python measure.py --ckpt sit_xl_2_pretrained --attn_type full
+```
+
+**立刻产出**：full attention SiT 的 per-t ERF 曲线 + distance distribution。这是你整篇文章最关键的一张图——per-t ERF 到底变不变？这张图出来之前，其他都不用做。
+
+### Step 2: NA fine-tune
+
+```
+SiT-XL/2 pretrained (full attention)
+    │
+    ▼ 替换 attention 为 NA
+SiT-NA (k=3,5,7,11,15)
+    │
+    ▼ fine-tune ~5000 steps（不是从零训 200 epochs）
+SiT-NA fine-tuned
+    │
+    ▼ 测量
+FID + GFLOPs + per-t ERF + distance 完整数据
+```
+
+### Step 3: 完整实验矩阵
+
+| Variant | Attention | Kernel | 测量 |
+|---------|-----------|--------|------|
+| baseline | full | — | FID, GFLOPs, ERF(t), Dist(t) |
+| na3 | NA | 3 | ↑ |
+| na5 | NA | 5 | ↑ |
+| na7 | NA | 7 | ↑ |
+| na11 | NA | 11 | ↑ |
+| na15 | NA | 15 | ↑ |
+
+---
+
+## 🔀 决策点
+
+```
+Phase 1 数据出来后：
+
+per-t ERF 差异 ≥ 2×
+  → Story 牢靠：「FM 下不同 t 需要不同 receptive field」
+  → 全速推进 t-adaptive kernel 方法
+  → 目标：完整论文
+
+per-t ERF 差异中等（1.2-2×）
+  → 存在但不惊艳
+  → 补跨模型验证（SD/Flux hook attention, 零成本）
+  → 判断是 FM 特有还是普遍现象
+
+per-t ERF 差异很小（< 1.2×）
+  → per-t 增量不够
+  → 转向 NA 在 FM 下的系统对比（HDiT 的 FM 复现+扩展）
+  → 目标：短文/workshop
+```
+
+---
+
+## ⚠️ 当前 pixel space 实验的处理
+
+**2026-07-18：停止所有 DiT-T pixel space 训练。**
+
+| 实验 | 状态 | 处理 |
 |------|------|------|
-| SD1.5 | UNet | HF diffusers |
-| SDXL | UNet | HF diffusers |
-| PixArt-α | DiT | HF diffusers |
-| Flux | DiT (MMDiT) | black-forest-labs |
+| full attention | Epoch 35/100 | ⬜ 停掉 |
+| NA k=7 | Epoch 31/100 | ⬜ 停掉 |
+| NA k=11 | Epoch 15/100 | ⬜ 停掉 |
+| NA k=15 | Epoch 14/100 | ⬜ 停掉 |
+| NA k=3 | 已挂 | — |
 
-Hook 不同 denoising step 的 attention weights，画 per-t ERF 曲线。**如果结论跨架构一致，说明这不只是 DiT 的 artifacts。**
-
-### 2. 更高分辨率实验
-
-256×256 或 512×512 上跑 full / na7 / na15 三个 variant，验证最优 kernel size 是否随分辨率变化。
-
-### 3. t-adaptive Kernel 方法
-
-如果 per-t ERF 差异显著，设计 kernel size 随 t 变化的方法：
-
-- **离散调度**：前一半采样步数大窗口，后一半小窗口，零额外成本
-- **连续调度**：`k(t) = k_min + (k_max - k_min) * t^α`
-- **可学习调度**：一个轻量 MLP 根据 (t, layer_index) 预测最优 kernel size
-
-对比 baseline：固定 k vs t-adaptive k vs full attention (upper bound)。
+**保留价值**：`pixelflow_na` 代码库作为：
+- 快速原型验证工具（DiT-T 跑得动 → 逻辑没问题）
+- attention/measure 模块直接搬到 SiT
+- Phase 2 pixel space 实验时的基础设施
 
 ---
 
-## 二、中期深化
+## 📁 代码复用计划
 
-### 1. 理论分析
-
-从 flow ODE 角度解释为什么 t 影响 optimal receptive field：
-
-```
-t→1: x_t 接近纯噪声，velocity field 是"从噪声到数据分布"的全局映射
-      → 需要 global context
-
-t→0: x_t 接近数据流形，velocity 近似"流形上的精细调整"
-      → 局部即可
-```
-
-可能的分析工具：
-- Score function 的 Lipschitz 常数随 t 的变化
-- 最优传输耦合矩阵在不同 t 下的 support size
-- 一维 toy case 的闭式解（Gaussian → Gaussian mixture）
-
-### 2. 跨架构验证
-
-在 UNet-based（SD系列）、DiT-based（PixArt/SD3）、Autoregressive（LlamaGen）上系统测量 per-t attention 模式，证明现象的普适性。
-
-### 3. 扩展到视频生成
-
-时间维度的 attention receptive field 可能有类似模式：
-- 早期 step → 需要看远帧（全局运动）
-- 后期 step → 只需要近帧（局部细节）
+| 模块 | pixelflow_na（现有） | → SiT |
+|------|---------------------|-------|
+| `models/attention.py` | FullAttention + NeighborAttention + make_attention() | ✅ 直接搬 |
+| `measure.py` | ERF + distance 测量 | ✅ 直接搬，hook 逻辑通用 |
+| `models/flow_matching.py` | FM loss + ODE 采样 | 参考，SiT 官方已有 |
+| `models/dit.py` | DiT backbone | SiT 官方的 DiT 替换 attention |
+| `sweep.py` | 实验矩阵自动化 | ✅ 参考逻辑 |
+| `analyze.py` | 可视化 | ✅ 直接搬 |
+| `data/dataset.py` | 数据加载 | SiT 官方已有（ImageNet latents） |
 
 ---
 
-## 三、长期方向
+## 📖 阅读优先级调整
 
-### 方向 A：动态计算生成模型
+参见 `Flow-NA-论文阅读指南.html`（待更新）。
 
-核心 idea：生成过程的不同阶段需要不同计算量，为什么要 uniform？
-
-```
-传统: step 1→20 用同一个模型
-
-动态:
-  step 1-5:   重 block — global attention, 全层激活
-  step 6-15:  常规 block — 中等窗口 NA
-  step 16-20: 轻量 block — 小窗口 NA 甚至 MLP-only
-```
-
-不只是 kernel size，是 **t-adaptive architecture**：
-- Token pruning：早期全量，后期逐步剪枝
-- Layer skipping：某些层在某 t 区间直接跳过 attention
-- 宽度动态调整：MLP ratio 随 t 变化
-
-### 方向 B：Attention 可解释性工具
-
-将 ERF + distance distribution 测量方法做成通用分析框架，系统研究 generative models 的 attention 行为模式。类似 Anthropic 的 Transformer Circuits 但针对生成模型，这个方向几乎是空白。
-
-### 方向 C：高效生成架构设计
-
-从 NA analysis 出发设计更好的 attention variant：
-- Learned sparsity：让模型自己学每个 token 该看谁
-- Multi-scale attention heads：不同 head 用不同窗口大小
-- Dilated NA 在生成中的系统研究（目前没有）
-- Timestep-conditional routing：某些层在某些 t 完全 skip attention
+**新优先级**：
+1. 🔴 **SiT** — 理解代码结构、数据格式、怎么 fine-tune
+2. 🔴 **HDiT** — 消融方法论（Table 1 模板）不变
+3. 🔴 **ΔConvFusion** — ERF 测量方法不变
+4. 🟡 **On Inductive Biases of DiT** — 理论支撑不变
+5. 🟢 **AsymFlow / MPDiT / FreqFlow** — Phase 1 跑通后再读
 
 ---
 
-## 关键决策点
+## ⏱️ 时间线
 
-```
-Phase 1 跑完后:
-
-per-t ERF 差异 ≥ 2×  →  Story 牢靠，全速推进 t-adaptive
-per-t ERF 差异中等    →  存在但不惊艳，补 latent space 实验再看
-per-t ERF 差异很小    →  不往 t-adaptive 走，转向 NA 在 FM 下的系统对比
-                        （作为 HDiT 在 Flow Matching 下的复现+扩展仍有价值）
-```
+| 阶段 | 内容 | 预计 |
+|------|------|------|
+| Day 1-2 | Clone SiT + 跑通 inference + 移植 attention/measure | 1-2 天 |
+| Day 3 | Full attention per-t ERF + distance 测量 → 第一张关键图 | 半天 |
+| Day 3-7 | 实现 NA fine-tune pipeline + 跑 5 个 NA variants | 3-5 天 |
+| Day 7-10 | 完整数据分析 + 画图 | 2-3 天 |
+| Day 10+ | 决策：push t-adaptive or 写短文 | — |
 
 ---
 
-## 参考工作
-
-- HDiT (Crowson et al., ICML 2024): pixel-space NA + DDPM
-- ΔConvFusion: ERF measurement methodology
-- PiT (Heo et al., ICCV 2021): distance distribution methodology
-- SiT (Ma et al., ECCV 2024): Flow Matching for diffusion
-- DiT (Peebles & Xie, ICCV 2023): transformer backbone
-- DynamicViT (Rao et al., NeurIPS 2021): token pruning → 动态计算参考
-- Round and Round: step-adaptive diffusion → 动态采样参考
+*Updated 2026-07-18 — pivot 到 latent space 优先*
