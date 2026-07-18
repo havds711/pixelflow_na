@@ -383,14 +383,15 @@ def parse_args():
     p.add_argument('--num_steps', type=int, default=20)
     p.add_argument('--batch_size', type=int, default=4)
     p.add_argument('--seed', type=int, default=42)
-    p.add_argument('--output', type=str, default='outputs/attention_locality')
+    p.add_argument('--output', type=str, default='outputs/attention_locality_sit.pt',
+                   help='Output .pt file path')
     p.add_argument('--device', type=str, default='cuda')
     return p.parse_args()
 
 
 def main():
     args = parse_args()
-    os.makedirs(args.output, exist_ok=True)
+    os.makedirs(os.path.dirname(args.output) or '.', exist_ok=True)
 
     device = args.device
     if device == 'cuda' and not torch.cuda.is_available():
@@ -432,7 +433,8 @@ def main():
     analyze_and_print(data, k_values)
 
     # Save
-    save_path = os.path.join(args.output, 'attention_locality.pt')
+    save_path = args.output
+    os.makedirs(os.path.dirname(save_path) or '.', exist_ok=True)
     torch.save(data, save_path)
     size_mb = os.path.getsize(save_path) / 1e6
     print(f"\n{'='*60}")
