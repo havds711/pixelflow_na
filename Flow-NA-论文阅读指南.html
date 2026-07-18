@@ -289,21 +289,124 @@
     Katherine Crowson 等 · <strong>ICML 2024</strong> · arxiv: 2401.11605
   </div>
   <div class="why">
-    第一篇把 NA 用在 pixel-space 生成的论文。关键不是 hourglass 架构——是它的<strong>消融方法论</strong>（Table 1）：逐步替换组件，量化 FID + GFLOPs。你的 Phase 1 实验表格照搬这个结构。重点看 NA vs Swin vs 全局 attention 对比。
+    第一篇把 NA 用在 pixel-space 生成的论文。关键不是 hourglass 架构——是它的<strong>消融方法论</strong>（Table 1）：逐步替换组件，量化 FID + GFLOPs。你的 Phase 1 实验表格照搬这个结构。<strong>⚠️ 注意：架构贡献的是效率（O(n²)→O(n)），不是质量（128² 上 FID 净赚仅 ~1 点）；质量提升大头来自 Soft-Min-SNR loss。</strong>
   </div>
   <details class="read-guide">
-    <summary>选择性阅读指南</summary>
+    <summary>选择性阅读指南（2026-07-18 陪读后更新）</summary>
     <div class="guide-content">
-    <h4><span class="must-read">✅ 必读</span>（~4页）</h4>
+    <h4><span class="must-read">✅ 必读</span>（~3页）</h4>
     <ul>
-      <li><strong>Table 1 消融路线</strong> — 怎么从基线一步步加组件。你论文 Table 1 的模板。</li>
-      <li><strong>Section 3.3 Neighborhood Attention</strong> — kernel size 配置策略。</li>
-      <li><strong>NA vs Swin vs 全局 attention</strong> — 为什么 NA 赢了 Swin。</li>
+      <li><strong>Table 1 + Section 5.2 消融路线</strong> — 怎么从 baseline 一步步加组件。你论文 Table 1 的模板。<span style="color:var(--orange);">（注意：原文没有 Section 3.3，NA 相关内容在 §4.3 和 §5.2）</span></li>
+      <li><strong>Section 4.3 Efficient Scaling</strong> — NA 放在高分辨率层，global attention 只放在最低分辨率层（16²），kernel size=7。</li>
+      <li><strong>Appendix D.1 Table 5</strong> — 完整消融（含被主表隐藏的 R2 和额外 baseline）。</li>
     </ul>
     <h4><span class="skip">❌ 跳过</span></h4>
     <ul>
-      <li>hourglass 架构细节（跟你的 flat baseline 无关）。</li>
-      <li>Soft-Min-SNR 损失函数（附录 C）。</li>
+      <li>hourglass 架构细节（§4.1-4.2，跟你的 flat baseline 无关）。</li>
+      <li>Appendix C Soft-Min-SNR — 但不是完全不看，见下方「陪读笔记」的总结。</li>
+    </ul>
+    </div>
+  </details>
+  <details class="read-guide" style="margin-top:0.3rem;">
+    <summary>📝 陪读笔记（2026-07-18）</summary>
+    <div class="guide-content" style="font-size:0.8rem;">
+    <h4>🔍 阅读指南的勘误</h4>
+    <ul>
+      <li><strong>Section 3.3 不存在</strong> — 论文结构是 §3 Preliminaries（只有 3.1 Diffusion Models），NA 相关内容在 <strong>§4.3</strong>（仅 3 句话）和 <strong>§5.2</strong>（Table 1 消融）。</li>
+      <li><strong>NA 为什么赢 Swin？原文没有理论分析</strong> — 只有一句 "Neighborhood attention performs significantly better in practice" + Table 1 的数字。如果想知道深层原因，需要读 Hassani et al. (2023) NAT 原论文。</li>
+      <li><strong>Kernel size 没有配置策略</strong> — 全实验统一 kernel_size=7（Table 7），没有消融为什么选 7，没有讨论不同层该不该用不同 size。</li>
+    </ul>
+
+    <h4>🧪 Table 1 消融：到底每一步加了什么</h4>
+    <table style="width:100%;border-collapse:collapse;font-size:0.75rem;margin:0.5rem 0;">
+      <tr style="background:#1c2128;">
+        <th style="padding:4px 6px;text-align:left;border:1px solid var(--border);">Step</th>
+        <th style="padding:4px 6px;text-align:left;border:1px solid var(--border);">改了什么</th>
+        <th style="padding:4px 6px;text-align:left;border:1px solid var(--border);">白话</th>
+        <th style="padding:4px 6px;text-align:center;border:1px solid var(--border);">FID↓</th>
+        <th style="padding:4px 6px;text-align:center;border:1px solid var(--border);">GFLOPs</th>
+      </tr>
+      <tr>
+        <td style="padding:4px 6px;border:1px solid var(--border);">R1</td>
+        <td style="padding:4px 6px;border:1px solid var(--border);">DiT-B/4 原版（flat + pixel-space）</td>
+        <td style="padding:4px 6px;border:1px solid var(--border);">flat 结构 + 全全局 attention</td>
+        <td style="padding:4px 6px;text-align:center;border:1px solid var(--border);">42.03</td>
+        <td style="padding:4px 6px;text-align:center;border:1px solid var(--border);">106</td>
+      </tr>
+      <tr>
+        <td style="padding:4px 6px;border:1px solid var(--border);">R3</td>
+        <td style="padding:4px 6px;border:1px solid var(--border);">R1 → HDiT block + trainer</td>
+        <td style="padding:4px 6px;border:1px solid var(--border);">flat 但换 HDiT 的 block 设计</td>
+        <td style="padding:4px 6px;text-align:center;border:1px solid var(--border);">42.49</td>
+        <td style="padding:4px 6px;text-align:center;border:1px solid var(--border);">106</td>
+      </tr>
+      <tr>
+        <td style="padding:4px 6px;border:1px solid var(--border);">R4</td>
+        <td style="padding:4px 6px;border:1px solid var(--border);">R3 + Soft-Min-SNR</td>
+        <td style="padding:4px 6px;border:1px solid var(--border);"><strong>只改 loss，不改架构</strong></td>
+        <td style="padding:4px 6px;text-align:center;border:1px solid var(--border);color:var(--green);">30.71</td>
+        <td style="padding:4px 6px;text-align:center;border:1px solid var(--border);">106</td>
+      </tr>
+      <tr>
+        <td style="padding:4px 6px;border:1px solid var(--border);">A</td>
+        <td style="padding:4px 6px;border:1px solid var(--border);">Flat → Hourglass（全 global attn）</td>
+        <td style="padding:4px 6px;border:1px solid var(--border);">加层级结构，Pixel-Unshuffle 下采样</td>
+        <td style="padding:4px 6px;text-align:center;border:1px solid var(--border);color:var(--red);">50.76</td>
+        <td style="padding:4px 6px;text-align:center;border:1px solid var(--border);color:var(--green);">32 (-70%)</td>
+      </tr>
+      <tr>
+        <td style="padding:4px 6px;border:1px solid var(--border);">B1</td>
+        <td style="padding:4px 6px;border:1px solid var(--border);">A + Swin Attention</td>
+        <td style="padding:4px 6px;border:1px solid var(--border);">高分辨率层换 Shifted Window</td>
+        <td style="padding:4px 6px;text-align:center;border:1px solid var(--border);color:var(--red);">55.93</td>
+        <td style="padding:4px 6px;text-align:center;border:1px solid var(--border);">29</td>
+      </tr>
+      <tr style="background:#0a1a0a;">
+        <td style="padding:4px 6px;border:1px solid var(--border);">B2</td>
+        <td style="padding:4px 6px;border:1px solid var(--border);">A + Neighborhood Attention</td>
+        <td style="padding:4px 6px;border:1px solid var(--border);">高分辨率层换 NA（滑动窗口）</td>
+        <td style="padding:4px 6px;text-align:center;border:1px solid var(--border);">51.07</td>
+        <td style="padding:4px 6px;text-align:center;border:1px solid var(--border);">29</td>
+      </tr>
+      <tr>
+        <td style="padding:4px 6px;border:1px solid var(--border);">C</td>
+        <td style="padding:4px 6px;border:1px solid var(--border);">B2 + GeGLU</td>
+        <td style="padding:4px 6px;border:1px solid var(--border);">FFN 里 GeLU → GEGLU（数据门控）</td>
+        <td style="padding:4px 6px;text-align:center;border:1px solid var(--border);">44.36</td>
+        <td style="padding:4px 6px;text-align:center;border:1px solid var(--border);">31</td>
+      </tr>
+      <tr>
+        <td style="padding:4px 6px;border:1px solid var(--border);">D</td>
+        <td style="padding:4px 6px;border:1px solid var(--border);">C + Axial RoPE</td>
+        <td style="padding:4px 6px;border:1px solid var(--border);">加性位置编码 → 2D 旋转位置编码</td>
+        <td style="padding:4px 6px;text-align:center;border:1px solid var(--border);">41.41</td>
+        <td style="padding:4px 6px;text-align:center;border:1px solid var(--border);">31</td>
+      </tr>
+      <tr style="background:#0a1a0a;">
+        <td style="padding:4px 6px;border:1px solid var(--border);">E</td>
+        <td style="padding:4px 6px;border:1px solid var(--border);">D + Soft-Min-SNR</td>
+        <td style="padding:4px 6px;border:1px solid var(--border);"><strong>只改 loss，架构不变</strong></td>
+        <td style="padding:4px 6px;text-align:center;border:1px solid var(--border);color:var(--green);">27.74</td>
+        <td style="padding:4px 6px;text-align:center;border:1px solid var(--border);">31</td>
+      </tr>
+    </table>
+
+    <h4>🔑 关键发现</h4>
+    <ul>
+      <li><strong>架构贡献效率，loss 贡献质量</strong>：在 128² 上，架构改动（A→D）FID 只从 50.76→41.41（对比 R3 的 42.49 几乎没赚），但 GFLOPs 从 106→31（-70%）。loss 改动（D→E 或 R3→R4）各贡献 12-14 个 FID 点。真正值钱的是 O(n) 复杂度——512² 时 HDiT 比 DiT 便宜 32×，1024² 时便宜 100×，flat DiT 根本跑不动高分辨率。</li>
+      <li><strong>R2 被隐藏了</strong>：R1→R3 中间实际有 R2（DiT 模型 + HDiT trainer，FID 崩到 69.86），因为 trainer 不兼容被从主表删掉、扔进 Appendix D.1。学术上不算造假但算选择性汇报。你论文可以学：失败的中间步骤放附录，主表保持干净。</li>
+      <li><strong>R1 没有公开模型</strong>：只是拿开源 DiT 代码去掉 VAE 跑 pixel-space 得到的一行数字，两个 repo（DiT + k-diffusion）都在，可以复现。</li>
+      <li><strong>NA vs Swin 精确定量</strong>：Swin（B1）FID 比纯 global（A）+5.17；NA（B2）只 +0.31。Swin 的窗口边界问题在生成任务上比判别任务严重得多。</li>
+    </ul>
+
+    <h4>🧮 Soft-Min-SNR 一句话</h4>
+    <p>基于 Min-SNR（Hang et al. 2023, ICCV）的平滑改进：把硬截断 <code>min(1/σ², γ)</code> 换成 <code>1/(σ² + 1/γ)</code>，γ=4。直观：在分母加小常数 0.25，让低噪声时 loss 权重平滑逼近上限 4 而不是一刀切。HDiT 不是这个 idea 的原创者，只是做了平滑化 + 调参。</p>
+
+    <h4>⚠️ 对你论文的影响</h4>
+    <ul>
+      <li>Table 1 消融格式可以直接照搬，但把 FID 贡献和计算效率贡献<strong>分两列报</strong>，比 HDiT 更诚实，审稿人会喜欢。</li>
+      <li>NA kernel size=7 是 magic number——你应该做 kernel size 消融（这是 HDiT 没做的事，可以是你的额外贡献）。</li>
+      <li>在你的消融里明确区分「架构改动」和「训练策略改动」（loss weighting 不算架构），避免像 HDiT 一样让人误读。</li>
     </ul>
     </div>
   </details>
@@ -703,7 +806,7 @@
 </div>
 
 <p style="margin-top:2rem;color:var(--dim);font-size:0.8rem;text-align:center;">
-  Generated 2026-07-16 · 重写 2026-07-17 — pivot 到 Flow Matching 下 NA 行为验证 + per-t 分析
+  Generated 2026-07-16 · 重写 2026-07-17 · HDiT 陪读笔记更新 2026-07-18 — 修正 §3.3 不存在、NA vs Swin 无理论分析、架构=效率 loss=质量、R2 隐藏、Soft-Min-SNR 解析
 </p>
 
 </body>
