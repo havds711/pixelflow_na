@@ -1,6 +1,6 @@
-# Flow Matching 下 Self-Attention 局部性验证
+# Diffusion Models 中 Self-Attention 局部性验证
 
-> 2026-07-18 · 核心问题：ΔConvFusion 证明了 DDPM 下 self-attention 是局部的，FM 下也是这样吗？
+> 2026-07-18 · 核心问题：Self-attention 在扩散模型中到底有多"全局"？ΔConvFusion 回答了 SDE 扩散，ODE 扩散（Flow Matching）还没人回答。
 
 ---
 
@@ -12,20 +12,27 @@
 | 核心卖点：「设计更好的 attention 机制」 | 核心问题：「FM 下 self-attention 也是局部的吗？」 |
 | 需要大量 GPU 训练 | 加载 pretrained 模型 → 推理 → 算 ERF |
 
-**关键发现**：ΔConvFusion (ICCV 2025) 的 ERF 分析方法是纯 post-hoc 的——他们只分析了 DDPM 模型（SD1.5, SDXL, PixArt），**没有任何人在 Flow Matching 模型上做过同样的分析。**
+**背景**：ΔConvFusion (ICCV 2025) 问了一个通用问题——"Does self-attention in diffusion models primarily capture global dependencies, or does it behave more locally?" 他们用 post-hoc ERF 分析回答：**是局部的**。但他们分析的全是 SDE-based 扩散模型（SD1.5, SDXL, PixArt）。
+
+**我们的问题**：这个结论搬到 ODE-based 扩散（Flow Matching — SiT, Flux, SD3）还成立吗？直线路径下模型去噪更简单，需要的 attention 上下文可能更少——也可能更多。**没有人在 FM 模型上做过同样的分析。**
+
+Flow Matching 也是 diffusion model 的一种（SiT 论文标题就是 "Exploring Flow **and** Diffusion-based Generative Models"），我们不是比较两个不相干的框架，而是在同一个扩散模型大类下补上 ODE 分支的分析空白。
 
 ---
 
 ## 🎯 研究 Gap
 
-| 论文 | 分析了 attention 局部性？ | 场景 | 没做的事 |
-|------|:---:|------|------|
-| **🎯 我们的工作** | ✅ | **Flow Matching** | — |
-| ΔConvFusion (ICCV 2025) | ✅ ERF < 15 | DDPM | 没在 FM 下测 ERF |
-| PiT (2025) | ✅ 99% 交互 ≤ 6 | DDPM | 没在 FM 下统计距离分布 |
-| HDiT (ICML 2024) | ✅ NA 有效 | DDPM | 没在 FM 下验证 NA |
+ΔConvFusion 自己问的问题：
+> "Does self-attention in diffusion models primarily capture global dependencies, or does it behave more locally?"
 
-> **结论**：Self-attention 在 DDPM 下的局部性已被充分验证，但**没有任何人在 Flow Matching 下系统地重新验证这个结论。** 不是发明新东西，是填补验证空白。
+| 论文 | 分析过的扩散模型 | 没做的事 |
+|------|:---:|------|
+| **🎯 我们的工作** | ODE 扩散（FM: SiT, Flux） | — |
+| ΔConvFusion (ICCV 2025) | SDE 扩散（DDPM: SD1.5, SDXL, PixArt） | 没测 FM 模型 |
+| PiT (2025) | SDE 扩散（DDPM） | 没测 FM 模型 |
+| HDiT (ICML 2024) | SDE 扩散（DDPM） | 没测 FM 模型 |
+
+> **结论**：同一个问题（"diffusion 里 attention 是局部的吗？"），前人只回答了 SDE 分支。我们补上 ODE（Flow Matching）分支的答案。
 
 ---
 
@@ -49,24 +56,26 @@
 
 ### 为什么不需要训练
 
-ΔConvFusion 是对**已训练好模型**的 attention pattern 做后验分析。我们的问题——"FM 下 attention 也是局部的吗？"——用别人训好的 FM 模型直接测就能回答。
+ΔConvFusion 的方法本身就是纯 post-hoc 的——加载已训好的模型，跑推理，抓 attention map，算 ERF。一步训练都没有。我们的工作就是把这个方法搬到他们没测过的模型上。
 
 ---
 
 ## 📋 实验矩阵
 
-| 模型 | 训练框架 | 架构 | Tokens | 状态 |
-|------|---------|------|--------|------|
+### 我们分析（ODE 扩散 / Flow Matching）
+
+| 模型 | 框架 | 架构 | Tokens | 状态 |
+|------|------|------|--------|------|
 | SiT-XL/2 | Flow Matching | DiT | 256 (16×16) | ✅ 已有权重 |
 | SiT-B/2 | Flow Matching | DiT | 256 | ✅ 可选 |
 | Flux/SD3 | Flow Matching | MMDiT | 待定 | 🟡 后续 |
 
-### 对比基线（文献值）
+### ΔConvFusion 已分析（SDE 扩散 / DDPM）— 我们的对比基线
 
-| 模型 | 训练框架 | 报告 ERF |
-|------|---------|----------|
-| PixArt | DDPM | < 15×15 |
-| SD1.5 | DDPM | < 20×20 |
+| 模型 | 框架 | 报告 ERF |
+|------|------|----------|
+| PixArt | DDPM (SDE) | < 15×15 |
+| SD1.5 | DDPM (SDE) | < 20×20 |
 
 ---
 
@@ -74,9 +83,9 @@
 
 ### 🔴 高风险
 
-1. **FM 下 attention 行为和 DDPM 下完全一样** — 那贡献就薄了。防御：(1) 第一手 FM 验证数据本身有发表价值；(2) 不做预设，发现任何差异都是完整论文种子。
+1. **ODE 和 SDE 扩散下 attention 局部性完全一样** — 那贡献就薄了。防御：(1) 第一手 FM 验证数据本身填补了分析空白；(2) 不做预设，任何差异都是完整论文种子。
 
-2. **审稿人说纯验证不是 novel contribution** — 防御：不只是验证，还要解释 ODE 直线路径 vs SDE 弯曲路径对 attention 的理论影响。
+2. **审稿人说纯验证不是 novel contribution** — 防御：ΔConvFusion 自己说 "Does self-attention in diffusion models capture global or local dependencies?" 用的是 diffusion models 这个词——暗示结论应该对全部扩散模型成立。但他们的实验只覆盖了 SDE 分支。我们补上 ODE 分支，要么确认这个通用结论，要么发现它不成立——两者都有发表价值。
 
 ### 🟡 中风险
 
@@ -86,8 +95,8 @@
 
 ## 📋 论文标题思路
 
-- **推荐**：*Is Self-Attention Still Local under Flow Matching? A Post-Hoc Receptive Field Analysis*
-- **备选**：*Do Straight Flows Need Less Context? Revisiting Attention Locality in Flow Matching Models*
+- **推荐**：*Is Self-Attention in Diffusion Models Really Local? A Post-Hoc Analysis of Flow Matching Models*
+- **备选**：*Do Straight Flows Need Less Context? Revisiting Attention Locality in ODE-based Diffusion*
 
 ---
 
@@ -101,4 +110,4 @@
 
 ---
 
-*Generated 2026-07-16 · Rewritten 2026-07-17（storyline pivot: 架构创新 → NA 行为验证）· Rewritten 2026-07-18（pivot: 训练→post-hoc ERF 分析）*
+*Generated 2026-07-16 · Rewritten 2026-07-17 · Rewritten 2026-07-18（post-hoc ERF 分析）*
