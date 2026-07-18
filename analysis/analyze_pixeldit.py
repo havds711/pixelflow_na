@@ -2,7 +2,7 @@
 """PixelDiT Attention Locality 完整分析"""
 import numpy as np, zipfile
 
-with zipfile.ZipFile('outputs/pixeldit_attention_locality/attention_locality_pixeldit.pt', 'r') as z:
+with zipfile.ZipFile('../outputs/attention_locality_pixeldit/attention_locality_pixeldit.pt', 'r') as z:
     PREFIX = 'attention_locality_pixeldit'
     masses = np.frombuffer(z.read(f'{PREFIX}/data/0'), dtype=np.float16).reshape(25,4,30,16,256,8)
     min_k_80 = np.frombuffer(z.read(f'{PREFIX}/data/1'), dtype=np.uint8).reshape(25,4,30,16,256)

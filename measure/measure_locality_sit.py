@@ -19,8 +19,8 @@ import numpy as np
 from tqdm import tqdm
 from collections import defaultdict
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'SiT'))
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'SiT'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from SiT.models import SiT_XL_2
 from SiT.download import find_model
 from SiT.models import modulate
@@ -379,11 +379,11 @@ def analyze_and_print(data: dict, k_values: list):
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument('--ckpt', type=str,
-                   default=os.path.join(os.path.dirname(__file__), 'SiT/checkpoints/SiT-XL-2-256.pt'))
+                   default=os.path.join(os.path.dirname(__file__), '..', 'SiT/checkpoints/SiT-XL-2-256.pt'))
     p.add_argument('--num_steps', type=int, default=20)
     p.add_argument('--batch_size', type=int, default=4)
     p.add_argument('--seed', type=int, default=42)
-    p.add_argument('--output', type=str, default='outputs/attention_locality_sit.pt',
+    p.add_argument('--output', type=str, default='../outputs/attention_locality_sit_xl/attention_locality_sit_xl.pt',
                    help='Output .pt file path')
     p.add_argument('--device', type=str, default='cuda')
     return p.parse_args()

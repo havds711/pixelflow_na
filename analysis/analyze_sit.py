@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""详细分析 attention_locality.pt 数据"""
+"""详细分析 attention_locality_sit_xl.pt 数据"""
 import numpy as np, zipfile, json
 
-with zipfile.ZipFile('outputs/attention_locality/attention_locality.pt', 'r') as z:
+with zipfile.ZipFile('../outputs/attention_locality_sit_xl/attention_locality_sit_xl.pt', 'r') as z:
     masses = np.frombuffer(z.read('attention_locality/data/0'), dtype=np.float16).reshape(20,4,28,16,256,8)
     min_k_80 = np.frombuffer(z.read('attention_locality/data/1'), dtype=np.uint8).reshape(20,4,28,16,256)
     min_k_50 = np.frombuffer(z.read('attention_locality/data/2'), dtype=np.uint8).reshape(20,4,28,16,256)

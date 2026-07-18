@@ -1,8 +1,8 @@
 # Attention Locality in Flow Matching Transformers — 分析 & 后续计划
 
-> 数据: `outputs/attention_locality/attention_locality.pt` (SiT), `outputs/pixeldit_attention_locality/attention_locality_pixeldit.pt` (PixDiT)
-> 实验脚本: `measure_locality_sit.py`, `pixeldit/measure_attention_locality.py`
-> 分析脚本: `analyze_data.py`, `analyze_pixeldit.py`
+> 数据: `outputs/attention_locality_sit_xl/attention_locality_sit_xl.pt` (SiT), `outputs/attention_locality_pixeldit/attention_locality_pixeldit.pt` (PixDiT)
+> 实验脚本: `measure/measure_locality_sit.py`, `measure/measure_locality_pixeldit.py`
+> 分析脚本: `analysis/analyze_sit.py`, `analysis/analyze_pixeldit.py`
 > 日期: 2026-07-18
 
 ---
@@ -207,7 +207,7 @@ Per-head NA 宽松策略 (50% query): k_avg=11.3, FLOPs节省 **39%** (SiT: 29%)
 按代码源分环境，同源模型复用：
 
 ```
-SiT 系列 (SiT-B/L/XL)    →  conda env: sit       (已有 environment.yml)
+SiT 系列 (SiT-B/L/XL)    →  conda env: natten       (已有 environment.yml)
 DiT 系列 (DiT-B/L/XL)    →  conda env: dit       (Meta 原版, 依赖类似但独立)
 PixDiT                   →  conda env: pixel     (已配置)
 MDTv2                    →  conda env: mdt       (独立 repo)
@@ -223,8 +223,8 @@ FlowAR / MAR             →  conda env: flowar    (完全不同范式)
 
 **实际做法:**
 ```bash
-# SiT (已有, 不用动)
-conda env create -f SiT/environment.yml
+# SiT (已有 natten 环境, 不用动)
+# conda env create -f SiT/environment.yml  # 已装好
 
 # 其他的按这个模板
 conda create -n dit python=3.10 -y

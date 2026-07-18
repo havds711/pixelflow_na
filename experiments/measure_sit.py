@@ -20,8 +20,8 @@ from tqdm import tqdm
 from typing import Optional
 from collections import defaultdict
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'SiT'))
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'SiT'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from SiT.models import SiT_XL_2, SiT_B_2, SiT_S_2
 from SiT.download import find_model
@@ -402,11 +402,12 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Measure ERF & Distance on pretrained SiT")
     parser.add_argument('--ckpt', type=str,
                         default=os.path.join(os.path.dirname(__file__),
+                                            '..',
                                             'SiT/checkpoints/SiT-XL-2-256.pt'),
                         help='SiT checkpoint path')
     parser.add_argument('--n_samples', type=int, default=32, help='Number of random latents')
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
-    parser.add_argument('--output', type=str, default='outputs/sit_measure', help='Output directory')
+    parser.add_argument('--output', type=str, default='../outputs/sit_measure', help='Output directory')
     parser.add_argument('--device', type=str, default='cuda', help='Device')
     return parser.parse_args()
 

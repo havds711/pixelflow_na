@@ -21,7 +21,7 @@ from torchvision import transforms
 from tqdm import tqdm
 from diffusers.models import AutoencoderKL
 
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 
 def parse_args():

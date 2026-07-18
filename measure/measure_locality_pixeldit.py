@@ -7,9 +7,8 @@ PixDiT c2i — Flow Matching 推理中 Attention 局部性测量
 
 用法:
   conda activate pixel
-  python c2i/measure_attention_locality.py --num_steps 25 --device cuda:2
+  python measure_locality_pixeldit.py --num_steps 25 --device cuda:2
 """
-
 import argparse, os, sys, math, time
 import torch
 import torch.nn as nn
@@ -18,8 +17,9 @@ import numpy as np
 from tqdm import tqdm
 from pathlib import Path
 
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(_PROJECT_ROOT))
+# 指向本地 pixeldit 代码
+_PIXELDIT_ROOT = os.path.join(os.path.dirname(__file__), '..', 'pixeldit')
+sys.path.insert(0, _PIXELDIT_ROOT)
 
 from pixdit_core.pixeldit_c2i import PixDiT
 from pixdit_core.modules import apply_rotary_emb, RotaryAttention
@@ -339,12 +339,12 @@ def print_tables(data, k_values):
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument('--ckpt', type=str,
-                   default=str(Path(__file__).resolve().parent / 'imagenet256_pixeldit_xl_epoch320.ckpt'))
+                   default='/home/Wugj/PixelDiT/c2i/imagenet256_pixeldit_xl_epoch320.ckpt')
     p.add_argument('--num_steps', type=int, default=25)
     p.add_argument('--batch_size', type=int, default=4)
     p.add_argument('--seed', type=int, default=42)
     p.add_argument('--output', type=str,
-                   default=str(Path(__file__).resolve().parent / 'attention_locality_output'))
+                   default=str(Path(__file__).resolve().parent.parent / 'outputs' / 'attention_locality_pixeldit'))
     p.add_argument('--device', type=str, default='cuda')
     return p.parse_args()
 

@@ -30,7 +30,7 @@ from collections import OrderedDict
 from copy import deepcopy
 import pyarrow.parquet as pq
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'SiT'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'SiT'))
 
 from SiT.models import SiT_XL_2, SiT_B_2, SiT_S_2, SiTBlock
 from SiT.download import find_model
@@ -47,7 +47,7 @@ class VAEWrapper:
     def __init__(self, vae_path: str = None, device: str = "cuda"):
         self.device = device
         self._vae = None
-        self.vae_path = vae_path or os.path.join(os.path.dirname(__file__), 'vae')
+        self.vae_path = vae_path or os.path.join(os.path.dirname(__file__), '..', 'vae')
 
     @property
     def vae(self):
@@ -204,7 +204,7 @@ def build_na_model(model_type: str, kernel_size: int, device: str):
     n_params = sum(p.numel() for p in model.parameters()) / 1e6
 
     # Load pretrained weights
-    ckpt_path = os.path.join(os.path.dirname(__file__), 'SiT/checkpoints/SiT-XL-2-256.pt')
+    ckpt_path = os.path.join(os.path.dirname(__file__), '..', 'SiT/checkpoints/SiT-XL-2-256.pt')
     state_dict = find_model(ckpt_path)
 
     # Handle key mismatch: pretrained model has full attention, we're replacing with NA
@@ -285,7 +285,7 @@ def finetune(
     sample_every: int = 500,
     save_every: int = 1000,
     log_every: int = 50,
-    output_dir: str = "outputs/sit_finetune_na",
+    output_dir: str = "../outputs/sit_finetune_na",
     device: str = "cuda",
 ):
     os.makedirs(os.path.join(output_dir, 'samples'), exist_ok=True)
@@ -422,7 +422,7 @@ def main():
         device = 'cpu'
 
     if args.output_dir is None:
-        args.output_dir = f"outputs/sit_finetune_na{args.kernel_size}"
+        args.output_dir = f"../outputs/sit_finetune_na{args.kernel_size}"
 
     print("=" * 60)
     print(f"SiT NA Fine-tune — {args.model}, k={args.kernel_size}")
