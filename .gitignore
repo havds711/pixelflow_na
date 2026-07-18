@@ -4,4 +4,7 @@ checkpoints/
 outputs/
 *.pt
 *.pth
+*.bin
+*.safetensors
 .DS_Store
+vae/

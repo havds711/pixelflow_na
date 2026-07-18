@@ -1,222 +1,195 @@
 # pixelflow_na — 实现计划
 
-> 2026-07-17 · 目标：拿预训练 flow model，迁移到 pixel-space，验证 NA 行为
+> 2026-07-18 更新 · Pivot: pixel space 从零训 → latent space SiT pretrained
 
 ---
 
-## 一、基座模型选择
+## 硬件情况
 
-| 候选 | 参数 | 优势 | 劣势 |
-|------|------|------|------|
-| **SiT-XL/2** | 675M | DiT 架构 = 你的代码高度兼容；开源权重；flow matching | latent space，需迁移到 pixel |
-| FLUX.2 klein | 9B | SOTA 质量 | 太大，4×3090 可能跑不动 fine-tune |
-| **AsymFLUX.2 klein** | 9B | 自带 pixel-space fine-tune 代码 | 同上，且依赖 FLUX 生态 |
+| GPU | 型号 | 显存 | 当前空闲 | 用途 |
+|-----|------|------|----------|------|
+| 0 | RTX 3080 Ti | 12 GB | **全空闲** | 备用 / 小实验 |
+| 1 | RTX 3080 Ti | 12 GB | **全空闲** | 备用 / 小实验 |
+| 2 | RTX 3090 | 24 GB | 18 GB | **主力训练卡** |
+| 3 | RTX 4080 | 16 GB | 13 GB | SiT-B/2 训练 / 测量 |
 
-**推荐：SiT-XL/2**。理由：
-- DiT backbone = 跟你 `pixel_dit.py` 的 `PixelSpaceDiT` 架构一致，attention 替换零成本
-- 675M 参数，服务器单卡/多卡都能跑
-- 官方代码直接可跑，Flow Matching 训练/采样都已实现
-- latent→pixel 迁移：参考 AsymFlow 的 Procrustes 方法，改动量可控
+- RAM: 125 GB total, 95 GB 可用
+- CPU: Xeon Silver 4210, 40 cores
+- 环境: conda `natten`, Python 3.10, PyTorch 2.3+cu121, NATTEN 0.17.4
 
----
+### 显存估算
 
-## 二、整体路线
-
-```
-SiT-XL/2 预训练权重（latent space, flow matching）
-        │
-        ▼
-  ┌─ Step 1: latent→pixel 迁移 ─────────────────┐
-  │  Procrustes 对齐 + pixel head 替换 + fine-tune │
-  │  产出：PixelSiT（全 attention 的 pixel baseline）│
-  └──────────────────────────────────────────────┘
-        │
-        ▼
-  ┌─ Step 2: NA 替换 + 行为测量 ────────────────┐
-  │  替换 attention → ERF 测量 → distance 分布    │
-  │  产出：实验数据（FID / GFLOPs / ERF / dist）  │
-  └──────────────────────────────────────────────┘
-```
+| 模型 | Params | 推理 VRAM | 训练 VRAM (bs=4) |
+|------|--------|-----------|-------------------|
+| SiT-XL/2 | 675M | ~10 GB (bf16) | ~18 GB |
+| SiT-B/2 | 130M | ~3 GB | ~8 GB |
 
 ---
 
-## 三、代码框架
+## Step 0: 环境准备（5 分钟）
 
+```bash
+pip install timm diffusers  # SiT 依赖
 ```
-pixelflow_na/
-├── README.md                    # 论文阅读指南（现有）
-├── PLAN.md                      # 本文件
-├── requirements.txt
-│
-├── baseline/                    # Step 1: latent→pixel 迁移
-│   ├── sit_model.py             # 从 SiT 官方 fork，加 pixel head
-│   ├── procrustes_align.py      # Procrustes 对齐（参考 AsymFlow）
-│   └── train_pixel_finetune.py  # pixel-space fine-tune 脚本
-│
-├── na_experiments/              # Step 2: NA 替换 + 测量
-│   ├── attention_swap.py        # 全 attn → NA 的替换逻辑
-│   ├── erf_measure.py           # ΔConvFusion 的 ERF 测量方法
-│   ├── distance_measure.py      # PiT 的 attention distance 统计
-│   └── sweep_kernel.py          # kernel size 扫描实验
-│
-└── analysis/                    # 结果分析
-    └── plot_results.py          # FID/ERF/distance 对比图
+
+验证：
+```bash
+python3 -c "from diffusers.models import AutoencoderKL; vae=AutoencoderKL.from_pretrained('vae/'); print('VAE OK')"
+python3 -c "from SiT.models import SiT_XL_2; print('SiT OK')"
 ```
 
 ---
 
-## 四、Step 1 详细：latent→pixel 迁移
+## Step 1: `measure_sit.py` — pretrained SiT 零训练 ERF 测量
 
-### 4.1 核心思路（来自 AsymFlow §3.2）
+**目标**：用 SiT-XL/2 pretrained 直接测 per-t ERF。零训练成本，这是决定整篇文章走向的关键数据。
 
-SiT 在 latent space 训好了，要把它的输出从 latent 映射到 pixel：
+### 为什么先做这一步
+
+ROADMAP.md 的核心假设：Flow Matching 下不同 t 需要不同 receptive field → 如果 per-t ERF 差异 ≥ 2× → story 牢靠。如果差异小 → 需要重新评估方向。这张图出来之前，不做任何训练。
+
+### 实现
+
+**新建文件**：`pixelflow_na/measure_sit.py`
+
+- 加载 `SiT/models.py` 的 `SiT_XL_2()`，load `SiT/checkpoints/SiT-XL-2-256.pt`
+- 使用 `SiT.get_attention_weights()` 提取 attention（已实现）
+- 复用 `measure.py` 的 ERF/distance 计算逻辑
+- SiT latent: 32×32 grid, patch=2 → 256 tokens → full attention 测量极快
+- 输入数据：随机噪声 latent（`randn(B,4,32,32)`），ERF 测量不依赖真实图像
+- **t 采样点**：t = 0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0（7 个点）
+
+### 测量指标
+
+| 指标 | 方法来源 | 输出 |
+|------|---------|------|
+| Per-t ERF | ΔConvFusion §3 | ERF 值随 t 变化曲线 |
+| Per-layer ERF | ΔConvFusion §3 | 每层 ERF |
+| Per-t Distance | PiT §3 | mean/P99 distance 随 t 变化 |
+| Distance cumulative | PiT §3 | P(d<k) 累计分布 |
+
+### 输出
 
 ```
-原始 SiT:  noise → [SiT DiT blocks] → latent prediction → VAE decoder → image
-我们的:    noise → [SiT DiT blocks] → Procrustes proj → pixel prediction → 直接出图
+outputs/sit_measure/
+├── sit_erf_full.json
+├── erf_vs_t.png          # 🔑 关键：ERF 随 t 变吗？
+├── erf_per_layer.png
+├── distance_vs_t.png
+└── distance_cumulative.png
 ```
 
-具体步骤：
-1. 加载 SiT 预训练权重，冻结大部分 DiT blocks
-2. 去掉最后的 latent output head，换成 pixel output head（`Linear(d_model, 3×patch²)`）
-3. **Procrustes 对齐**：在 latent 空间和 pixel 空间之间学一个正交投影矩阵 P
-   - 用少量真实图像（如 ImageNet 1K 张），通过 SiT 的 VAE encoder 得到 latent
-   - 解 Procrustes 问题：min ||X_pixel - P·X_latent||²，s.t. P^T P = I
-   - P 就是 latent→pixel 的最佳正交近似
-4. Fine-tune：解冻全部层，用 flow matching loss 在 pixel space 训练几百步
+### 运行
 
-### 4.2 关键改动
-
-```python
-# 原始 SiT 输出
-class SiT(nn.Module):
-    def forward(self, x, t, y):
-        # x: [B, C_latent, H_latent, W_latent]  # 如 [B, 4, 32, 32]
-        x = patchify(x)  # → [B, N, d_model]
-        for block in self.blocks:
-            x = block(x, c)
-        x = self.final_layer(x)  # → [B, N, C_latent * patch²]
-        x = unpatchify(x)        # → [B, C_latent, H_latent, W_latent]
-        return x
-
-# 改成 pixel 输出
-class PixelSiT(nn.Module):
-    def __init__(self, sit_pretrained, img_size=256):
-        # 复用 SiT 的 DiT blocks
-        self.blocks = sit_pretrained.blocks  # 冻结 or fine-tune
-        self.procrustes = ProcrustesProjection(latent_dim=4, pixel_dim=3)
-        # 新 pixel head：输出放回 pixel space
-        self.pixel_head = nn.Linear(d_model, 3)  # 3 = RGB，1 token = 1 pixel
-
-    def forward(self, x, t, y):
-        # x: [B, 3, H, W]  直接 pixel 输入
-        x = pixel_embed(x)  # Linear(3, d_model)，每像素一个 token
-        for block in self.blocks:
-            x = block(x, c)
-        x = self.pixel_head(x)  # → [B, N, 3]
-        x = reshape_to_image(x) # → [B, 3, H, W]
-        return x
+```bash
+python measure_sit.py --device cuda:0 --n_samples 32
+# 预期：<5 分钟完成
 ```
-
-### 4.3 资源预估
-
-- SiT-XL/2 权重下载：~2.7 GB
-- 加载预训练模型：单卡 24GB 显存够用
-- Procrustes 对齐：CPU 就能跑（矩阵 SVD）
-- Fine-tune 几百步：4×3090 或服务器单卡，几小时
 
 ---
 
-## 五、Step 2 详细：NA 替换 + 行为测量
+## Step 2: `finetune_sit_na.py` — NA Fine-tune + 验证图保存
 
-### 5.1 替换逻辑
+### 策略
 
-基于你现有的 `pixel_dit.py` block 实现（`NeighborAdaDiTBlock` 等），只需要改 attention 调用：
+先用 SiT-B/2 (130M) on GPU 3 (4080) 验证 pipeline 能跑通（快 4x），然后切 SiT-XL/2 on GPU 2 (3090) 正式跑。
 
-```python
-# attention_swap.py
-def swap_attention(model, attn_type, kernel_size=7):
-    """
-    把 PixelSiT 的每个 DiT block 的 self-attention 替换为指定类型。
-    attn_type: "full" | "na" | "hydra" | "dcna"
-    """
-    for i, block in enumerate(model.blocks):
-        block.attn = make_attention(
-            attn_type, block.dim, block.num_heads, kernel_size
-        )
+### 关键功能
+
+1. **VAE 预提取 latents**：一次性把 160K ImageNet 图像 encode 成 latent（~1.3GB fp16），训练时直接加载
+2. **NA 替换**：加载 pretrained token → 替换所有 block.attn 为 NA → fine-tune
+3. **每 500 steps 保存验证图**：固定 8 个 class labels，生成 sample + VAE decode → 保存 PNG
+4. **全参数 fine-tune**，LR=1e-5（比从头训低 10x），EMA decay=0.9999
+
+### 训练配置
+
+| 参数 | SiT-B/2 | SiT-XL/2 |
+|------|---------|----------|
+| GPU | 4080 (GPU 3) | 3090 (GPU 2) |
+| Batch size | 4-8 | 1-2 |
+| LR | 1e-5 | 1e-5 |
+| Fine-tune steps | ~5000 | ~5000 |
+| Sample every | 500 steps | 500 steps |
+
+### 验证样本
+
+每 500 steps 生成 8 张样本图（固定 class labels: 207, 360, 387, 974, 88, 979, 417, 279）：
+
+```
+outputs/sit_finetune_na{k}/
+├── samples/
+│   ├── step_0500.png
+│   ├── step_1000.png
+│   └── ...
+├── checkpoint.pt
+└── measure_results.json
 ```
 
-### 5.2 ERF 测量（复现 ΔConvFusion 方法）
+### 运行
 
-```python
-# erf_measure.py
-def measure_erf(model, sample_input):
-    """
-    1. 前向传播，勾住每层 attention 的 attention weights
-    2. 对每个 query token，计算它跟所有 key token 的 attention 权重
-    3. 以 query 位置为中心，统计 attention 随距离的衰减
-    4. 拟合高斯，半径 = ERF
-    """
-    attentions = {}  # layer_idx -> attention_weights
-    # hook 注册到每个 block
-    # ...
-    # 计算 ERF
-    for layer_idx, attn in attentions.items():
-        erf = fit_gaussian_erf(attn)  # 返回如 11.3
-        print(f"Layer {layer_idx}: ERF = {erf:.1f}")
+```bash
+# 先预提取 latents
+python precompute_latents.py --device cuda:0
+
+# 快速验证 pipeline（500 steps）
+python finetune_sit_na.py --kernel_size 7 --max_steps 500 --device cuda:3
+
+# 正式 fine-tune（5000 steps）
+python finetune_sit_na.py --kernel_size 7 --max_steps 5000 --device cuda:2
 ```
-
-### 5.3 Distance 分布（复现 PiT 方法）
-
-```python
-# distance_measure.py
-def measure_distance_distribution(model, sample_input):
-    """
-    对每个 token pair (i,j)，计算 Euclidean distance，
-    加权 attention score，统计距离分布。
-    输出：cumulative P(distance ≤ k)
-    """
-```
-
-### 5.4 实验矩阵
-
-| 实验 | Attention | kernel_size | 采样步数 | 测量指标 |
-|------|-----------|-------------|----------|----------|
-| baseline | full | — | 5/10/20/50 | FID, GFLOPs, ERF, dist |
-| na3 | NA | 3 | 5/10/20/50 | 同上 |
-| na5 | NA | 5 | 5/10/20/50 | 同上 |
-| na7 | NA | 7 | 5/10/20/50 | 同上 |
-| na11 | NA | 11 | 5/10/20/50 | 同上 |
-| na15 | NA | 15 | 5/10/20/50 | 同上 |
 
 ---
 
-## 六、服务器运行计划
+## Step 3: `sweep_sit.py` — 批量 NA Sweep
 
-### 环境
-- 推荐：单卡 A100 或 4×3090
-- SiT-XL 推理：~10GB VRAM
-- Fine-tune (batch_size=8, 256×256)：~20GB VRAM
+对 NA k = 3, 5, 7, 11, 15 批量 fine-tune + 自动测量。
 
-### 时间线
+### 实验矩阵
 
-| 阶段 | 内容 | 预计时间 |
-|------|------|----------|
-| 1 | Clone SiT + 加载预训练权重 + 验证推理 | 半天 |
-| 2 | 实现 Procrustes 对齐 + pixel head | 1天 |
-| 3 | Fine-tune PixelSiT baseline | 几小时-1天 |
-| 4 | 实现 attention swap（已有 block 代码直接用） | 半天 |
-| 5 | 实现 ERF + distance 测量 | 1天 |
-| 6 | 跑完整实验矩阵 | 1-2天 |
-| 7 | 分析 + 画图 | 半天 |
+| Variant | Attention | Kernel | GPU | 测量 |
+|---------|-----------|--------|-----|------|
+| baseline | full | — | — | Step 1 已测 |
+| na3 | NA | 3 | 3090 | ERF + Dist + FID + GFLOPs |
+| na5 | NA | 5 | 3090 | ↑ |
+| na7 | NA | 7 | 3090 | ↑ |
+| na11 | NA | 11 | 3090 | ↑ |
+| na15 | NA | 15 | 3090 | ↑ |
+
+### 输出
+
+`outputs/sit_sweep_results.json` — 兼容 `analyze.py` 直接可视化。
 
 ---
 
-## 七、风险与降级方案
+## Step 4: 可选 — 跨模型 post-hoc 验证
 
-| 风险 | 降级方案 |
-|------|----------|
-| SiT 预训练权重的 VAE 跟我 pixel head 不兼容 | 不从 latent 迁移，直接在 pixel space 从头训一个小 DiT-S（1-2天） |
-| Procrustes 对齐质量差（pixel 输出模糊） | 加 perceptual loss（LPIPS），参考 FREPix 的做法 |
-| Fine-tune 需要很多步才能收敛 | 先只测 ERF + distance（不依赖 FID），这些用预训练+少量 fine-tune 就能测 |
-| 服务器没 GPU | 64×64 分辨率 + DiT-S + 4×3090 本地也能跑 Phase 1 核心实验 |
+对开源 Flow Matching 模型（如 SD3/Flux DiT backbone）做 hook-based ERF 测量，零训练成本提供跨模型 validation。
+
+---
+
+## 文件变更
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `PLAN.md` | 更新 | 本文件 |
+| `measure_sit.py` | **新建** | SiT ERF/distance 测量入口 |
+| `finetune_sit_na.py` | **新建** | SiT NA fine-tune + 验证图保存 |
+| `sweep_sit.py` | **新建** | SiT NA sweep 自动化 |
+| `precompute_latents.py` | **新建** | 一次性预提取 ImageNet latents |
+| `measure.py` | 不改 | 提取公共函数到 module 级别供复用 |
+| `SiT/` | 不改 | 官方代码，直接 import |
+| `analyze.py` | 不改 | JSON 格式兼容 |
+
+---
+
+## 验证
+
+| 阶段 | 命令 | 预期 |
+|------|------|------|
+| Step 1 | `python measure_sit.py --device cuda:0` | <5min, 产出 erf_vs_t.png |
+| Step 2 | `python finetune_sit_na.py -k 7 --max_steps 500 --device cuda:3` | loss 下降, sample 图正常 |
+| Step 3 | `python sweep_sit.py --kernels na7 na15 --device cuda:2` | FID + ERF 数据一致 |
+
+---
+
+*Updated 2026-07-18 — pivot 到 SiT latent space，具体 GPU 分配 + 验证图策略*
