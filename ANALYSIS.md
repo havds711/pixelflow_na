@@ -1,6 +1,6 @@
 # Attention Locality in Diffusion Transformers — 完整分析报告
 
-> 数据: `outputs/` 下 6 个模型的 attention locality 测量
+> 数据: `outputs/attention_locality_*.pt` (6 个模型，统一目录结构)
 > 实验脚本: `measure/measure_locality_*.py`
 > 分析脚本: `analysis/analyze_all.py` (统一分析), `analysis/analyze_sit.py`, `analysis/analyze_pixeldit.py`
 > 日期: 2026-07-19 (更新)
@@ -175,10 +175,10 @@ pixelflow_na/
 │   └── analyze_pixeldit.py             # PixDiT 单独分析
 │
 ├── outputs/                            # 测量数据 + 分析报告
-│   ├── attention_locality_sit.pt              # SiT-XL (193 MB)
+│   ├── attention_locality_sit_xl/             # SiT-XL (193 MB)
 │   ├── attention_locality_sit_b/              # SiT-B  (62 MB)
 │   ├── attention_locality_sit_l/              # SiT-L  (165 MB)
-│   ├── attention_locality_pixeldit.pt         # PixDiT  (258 MB)
+│   ├── attention_locality_pixeldit/           # PixDiT  (258 MB)
 │   ├── attention_locality_dit_xl/             # DiT-XL  (2.4 GB)
 │   ├── attention_locality_mdtv2_xl/           # MDTv2  (2.5 GB)
 │   └── analysis/                              # 分析报告
