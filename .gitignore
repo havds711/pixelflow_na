@@ -8,3 +8,5 @@ outputs/
 *.safetensors
 .DS_Store
 vae/
+dit_repo/
+mdt_repo/
